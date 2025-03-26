@@ -15,7 +15,7 @@ model = joblib.load("model/lgbm_model.pkl")
 
 # Функция для генерации признаков из даты
 def generate_features(date):
-    date = pd.to_datetime(date, format="%d.%m.%Y")
+    date = pd.to_datetime(date, dayfirst=True)
     features = {
         'year': date.year,
         'month': date.month,
@@ -28,14 +28,14 @@ def generate_features(date):
 
 # Проверка, является ли дата понедельником
 def is_monday(date):
-    return pd.to_datetime(date, format="%d.%m.%Y").weekday() == 0
+    return pd.to_datetime(date, dayfirst=True).weekday() == 0
 
 # Функция прогноза на 6 недель вперед с графиком
 def forecast_6_weeks(start_date):
     dates = []
     prices = []
     for i in range(6):
-        next_date = pd.to_datetime(start_date) + pd.DateOffset(weeks=i)
+        next_date = pd.to_datetime(start_date, dayfirst=True) + pd.DateOffset(weeks=i)
         features = generate_features(next_date.strftime("%d.%m.%Y"))
         price = model.predict(features)[0]
         dates.append(next_date)
@@ -44,36 +44,48 @@ def forecast_6_weeks(start_date):
 
 # Генерация графика прогноза
 def generate_forecast_plot(dates, prices):
-    plt.figure(figsize=(8, 4))
+    plt.figure(figsize=(10, 5))
     plt.plot(dates, prices, marker='o', linestyle='-', color='blue', label='Прогноз цены')
     for i, price in enumerate(prices):
         plt.text(dates[i], price, f'{price:.2f}', ha='center', va='bottom')
     plt.title('Прогноз цены на 6 недель вперёд')
     plt.xlabel('Дата')
     plt.ylabel('Цена на арматуру')
-    plt.xticks(dates, [date.strftime('%d.%m') for date in dates], rotation=45)
+    plt.xticks(dates, [date.strftime('%d.%m.%Y') for date in dates], rotation=45, ha='right')
     plt.grid(True)
     plt.legend()
+    plt.tight_layout()
+    plt.annotate("Код версии: 1.0", xy=(0.95, 0.02), xycoords='axes fraction', ha='right', va='bottom', fontsize=8, color='gray')
     buf = io.BytesIO()
     plt.savefig(buf, format='png')
     buf.seek(0)
     plt.close()
     return buf
 
+# Определение склонения слова "неделя"
+def get_week_word(weeks):
+    if weeks % 10 == 1 and weeks % 100 != 11:
+        return 'неделю'
+    elif 2 <= weeks % 10 <= 4 and not (12 <= weeks % 100 <= 14):
+        return 'недели'
+    else:
+        return 'недель'
+
 # Определение стратегии закупки с учётом общей тенденции
 def determine_strategy(prices):
     weeks_to_buy = 1
+    trend = 'падает'
+
     for i in range(1, len(prices)):
-        # Если текущая цена выше предыдущей — продолжаем закупку
-        if prices[i] > prices[i - 1]:
-            weeks_to_buy = i + 1
-        # Если цена упала, но потом снова выросла выше начальной — продолжаем закупку
-        elif prices[i] >= prices[0]:
-            weeks_to_buy = i + 1
-        # Если цена падает и не восстанавливается — останавливаемся
-        else:
+        if prices[i] < prices[i - 1]:
             break
-    return weeks_to_buy
+        weeks_to_buy = i + 1
+        trend = 'растёт'
+
+    if prices[1] < prices[0]:
+        trend = 'падает'
+
+    return weeks_to_buy, trend
 
 # Команда /start
 async def start(update: Update, context: CallbackContext) -> None:
@@ -92,16 +104,14 @@ async def predict(update: Update, context: CallbackContext) -> None:
             return
 
         dates, prices = forecast_6_weeks(user_input)
-        weeks_to_buy = determine_strategy(prices)
-        strategy = f"📦 Закупаем на {weeks_to_buy} недель."
-        trend = 'растёт' if weeks_to_buy > 1 else 'падает или стабильна'
-        graph = generate_forecast_plot(dates, prices)
+        weeks_to_buy, trend = determine_strategy(prices)
+        strategy = f"📦 Закупаем на {weeks_to_buy} {get_week_word(weeks_to_buy)}."
         response = (
             f"💰 Прогноз цены на {user_input}: {prices[0]:.2f} руб.\n"
             f"📈 {strategy}\n"
             f"📊 Рекомендация: цена {trend}."
         )
-
+        graph = generate_forecast_plot(dates, prices)
         await update.message.reply_photo(photo=graph, caption=response)
     except Exception as e:
         response = f"❌ Ошибка: {str(e)}"
